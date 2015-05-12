@@ -178,7 +178,7 @@ func has_settings( args ...string) (bool) {
         }
     }
 
-    return found == len(args)
+    return false
 }
 
 func get_setting(name string) (string) {
