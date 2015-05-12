@@ -1,15 +1,46 @@
 package main
 
 import (
-    "flag"
     "os"
     "runtime"
     "fmt"
+    "flag"
 )
 
+type Module struct {
+    module string
+    action string
+    fn string
+}
+
 func usage() {
-    fmt.Fprintf(os.Stderr, "usage: myprog [inputfile]\n")
+    fmt.Print("usage: wpo [plugin|theme|options] [action] [params]\n")
     os.Exit(2)
+}
+
+func plugin( action string ) {
+
+    var CommandLine = flag.NewFlagSet("params", flag.ExitOnError)
+
+    instance := CommandLine.String("instance","2342562","The instance")
+
+    CommandLine.Usage = usage;
+    CommandLine.Parse(os.Args[3:])
+
+    fmt.Printf("Instance: %s\n", *instance)
+}
+
+func plugin_install() {
+
+}
+
+func theme( action string ) {
+    fmt.Print("Theme is not implemented")
+    os.Exit(1)
+}
+
+func register_module(*modules []Module, name string, action string, fn func) {
+    append(modules, Module{name:name, action:action, fn:""})
 }
 
 func main() {
@@ -19,13 +50,14 @@ func main() {
         os.Exit(1)
     }
 
-    var CommandLine = flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+    if len(os.Args) < 2 {
+        usage()
+    }
+    
+    module := os.Args[1]
+    action := os.Args[2]
 
-    action := CommandLine.String("i","foo","A string")
+    var modules []Module;
 
-    flag.Usage = usage
-    flag.Parse()
-
-    fmt.Print(*action)
-    fmt.Print(CommandLine)
+    append(modules, Module{name:"plugin", action:"install", fn:plugin_install})
 }
