@@ -8,13 +8,22 @@ import (
     "log"
     "regexp"
     "net"
+    "io"
+    "net/http"
     "bufio"
+    "archive/zip"
     "bytes"
     "strings"
     "path/filepath"
     "io/ioutil"
     "database/sql"
     _ "github.com/go-sql-driver/mysql"
+    "github.com/jeffail/gabs"
+)
+
+const (
+
+    WORDPRESS_PLUGIN_API string = "https://api.wordpress.org/plugins/info/1.0/{SLUG}.json"
 )
 
 type Module struct {
@@ -61,7 +70,7 @@ func dbconnect() {
     db, err := sql.Open("mysql", connectURL.String())
 
     if err != nil {
-        panic(err.Error())
+        error(err.Error())
     }
 
     defer db.Close()
@@ -69,7 +78,7 @@ func dbconnect() {
     err = db.Ping()
 
     if err != nil {
-        panic(err.Error())
+        error(err.Error())
     }
 
     // Prepare statement for reading data
@@ -85,7 +94,7 @@ func dbconnect() {
         err = rows.Scan(&id,&user,&email)
 
         if err != nil {
-            panic(err.Error()) // proper error handling instead of panic in your app
+            error(err.Error()) // proper error handling instead of error in your app
         }
 
         fmt.Printf("ID:%s USER:%s EMAIL:%s\n", string(id), string(user), string(email))
@@ -111,8 +120,144 @@ func wpdir( args ...string ) (string) {
     return path.String()
 }
 
+func build_url( url string, vars map[string]string) (string) {
+
+    for key, value := range vars {
+        
+        var placeholder bytes.Buffer
+
+        placeholder.WriteString("{")
+        placeholder.WriteString(key)
+        placeholder.WriteString("}")
+
+        url = strings.Replace(url, placeholder.String(), value, -1);
+    }
+
+    return url
+}
+
+func Unzip(src, dest string) (error interface{}) {
+    r, err := zip.OpenReader(src)
+    if err != nil {
+        return err
+    }
+    defer r.Close()
+
+    for _, f := range r.File {
+        rc, err := f.Open()
+        if err != nil {
+            return err
+        }
+        defer rc.Close()
+
+        path := filepath.Join(dest, f.Name)
+        if f.FileInfo().IsDir() {
+            os.MkdirAll(path, f.Mode())
+        } else {
+            f, err := os.OpenFile(
+                path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+            if err != nil {
+                return err
+            }
+            defer f.Close()
+
+            _, err = io.Copy(f, rc)
+            if err != nil {
+                return err
+            }
+        }
+    }
+
+    return nil
+}
+
+func download_plugin(slug string) {
+
+    fmt.Println("Reading api...");
+
+    resp, err := http.Get(build_url(WORDPRESS_PLUGIN_API, map[string]string{"SLUG":slug}))
+
+    if err != nil {
+        error("Fail to read plugins api")
+    }
+
+    if resp.StatusCode == 404 {
+        error("Plugin not found");
+    }
+
+    defer resp.Body.Close()
+
+    body, err := ioutil.ReadAll(resp.Body)
+
+    if err != nil {
+        error("Fail to read plugins api body")
+    }
+
+    if strings.EqualFold(string(body), "null") {
+        error("Plugin not found")
+    }
+
+    parsed, err := gabs.ParseJSON(body)
+
+    if err != nil {
+        error("Fail to read json")
+    }
+
+    plugin_zip, ok := parsed.Path("download_link").Data().(string)
+    plugin_name, ok := parsed.Path("name").Data().(string)
+
+    if !ok {
+        error("Invalid data received from api")
+    }
+
+    fmt.Printf("Downloading \"%s\" from %s...\n", plugin_name, plugin_zip)
+
+    zip_resp, get_zip_err := http.Get(plugin_zip)
+    defer resp.Body.Close()
+
+    if get_zip_err != nil {
+        error("Fail to download zip")
+    }
+
+    temp_file, temp_file_err := ioutil.TempFile(os.TempDir(), "wpo_plugin")
+
+    if temp_file_err != nil {
+        error("Fail to create temporary file")
+    }
+
+    defer temp_file.Close();
+
+    zip_data, read_zip_error := ioutil.ReadAll(zip_resp.Body)
+
+    if read_zip_error != nil {
+        error("Fail to read bytes from response")
+    }
+
+    temp_file.Write(zip_data);
+
+    zip, zip_open_err := zip.OpenReader(temp_file.Name())
+
+    if zip_open_err != nil {
+        error("Not a zip file")
+    }
+
+    defer zip.Close()
+
+    fmt.Println("Extracting zip...");
+
+    unzip_error := Unzip(temp_file.Name(), wpdir("/wp-content/plugins"))
+
+    if unzip_error != nil {
+        error("Not a zip file")
+    }
+
+    fmt.Println("Remove temporary file");
+
+    os.Remove(temp_file.Name())
+}
+
 func is_wordpress() (bool) {
-    
+    return true
     files, error := ioutil.ReadDir(wpdir())
 
     if error != nil {
@@ -130,19 +275,41 @@ func is_wordpress() (bool) {
     return false
 }
 
+func dirExists(path string) (bool) {
+    _, err := os.Stat(path)
+    if err == nil { return true }
+    if os.IsNotExist(err) { return false }
+    return false
+}
+
 func plugin_install() {
 
     var args = flag.NewFlagSet("params", flag.ExitOnError)
 
-    name := args.String("name", "","Plugin name")
+    slug := args.String("slug", "","Plugin slug")
 
     args.Parse(os.Args[3:])
 
-    if len(*name) == 0 {
-        error("Please specify plugin name")
+    if len(*slug) == 0 {
+        error("Please specify plugin slug")
     }
 
-    dbconnect()
+    var path bytes.Buffer
+
+    path.WriteString("/wp-content/plugins/")
+    path.WriteString(*slug)
+
+    exist := dirExists(wpdir(path.String()))
+
+    if exist {
+        error("Plugin already exist")
+    }
+
+    download_plugin(*slug)
+
+    fmt.Printf("Installed at: %s", path.String())
+
+    os.Exit(0)
 }
 
 func getip( domain string ) (string) {
